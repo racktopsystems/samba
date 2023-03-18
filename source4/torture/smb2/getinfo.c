@@ -824,6 +824,85 @@ static bool torture_smb2_getinfo(struct torture_context *tctx)
 	return ret;
 }
 
+#define LOOP_DIR "level1/level2/level3/level4/level5/level6/level7/level8/level9/level10/"
+#define LOOP_FNAME LOOP_DIR "loop_allinfo_file.dat"
+
+/*
+ * Tight loop of RAW_FILEINFO_SMB2_ALL_INFORMATION
+ */
+static bool torture_smb2_getfinfo_all_loop(struct torture_context *tctx,
+    struct smb2_tree *tree)
+{
+	NTSTATUS status;
+	TALLOC_CTX *tmp_ctx = talloc_new(tctx);
+	union smb_fileinfo io;
+	struct smb2_create cr;
+	struct smb2_close cl;
+	struct smb2_handle h;
+	bool ret = true;
+	struct smb2_request *req[3];
+	char *p, fname[] = LOOP_FNAME;
+
+	p = fname;
+	while ((p = strchr(p, '/')) != NULL) {
+		*p = '\0';
+		status = smb2_util_mkdir(tree, fname);
+		torture_assert(tctx, ret, "Failed to setup up test directory " LOOP_DIR);
+		*p++ = '/';
+	}
+
+	h.data[0] = UINT64_MAX;
+	h.data[1] = UINT64_MAX;
+
+	ZERO_STRUCT(io);
+	io.generic.level = RAW_FILEINFO_SMB2_ALL_INFORMATION;
+	io.generic.in.file.handle = h;
+
+	ZERO_STRUCT(cr);
+	cr.in.oplock_level = 0;
+	cr.in.desired_access = SEC_FILE_READ_ATTRIBUTE;
+	cr.in.file_attributes   = FILE_ATTRIBUTE_NORMAL;
+	cr.in.create_disposition = NTCREATEX_DISP_OPEN_IF;
+	cr.in.share_access =
+		NTCREATEX_SHARE_ACCESS_DELETE|
+		NTCREATEX_SHARE_ACCESS_READ|
+		NTCREATEX_SHARE_ACCESS_WRITE;
+	cr.in.create_options = 0;
+	cr.in.fname = LOOP_FNAME;
+
+	ZERO_STRUCT(cl);
+	cl.in.file.handle = h;
+
+	for (;;) {
+		smb2_transport_compound_start(tree->session->transport, 3);
+
+		req[0] = smb2_create_send(tree, &cr);
+
+		smb2_transport_compound_set_related(tree->session->transport, true);
+
+		req[1] = smb2_getinfo_file_send(tree, &io);
+		req[2] = smb2_close_send(tree, &cl);
+
+		smb2_transport_compound_set_related(tree->session->transport, false);
+
+		status = smb2_create_recv(req[0], tmp_ctx, &cr);
+		torture_assert_ntstatus_ok(tctx, status, "Unable to create test file "
+		    LOOP_FNAME "\n");
+
+		status = smb2_getinfo_file_recv(req[1], tmp_ctx, &io);
+		torture_assert_ntstatus_ok(tctx, status, "getinfo failed on "
+		    LOOP_FNAME "\n");
+
+		status = smb2_close_recv(req[2], &cl);
+		if (!NT_STATUS_IS_OK(status))
+			torture_warning(tctx, "failed to close handle to " LOOP_FNAME "\n");
+	}
+
+	talloc_free(tmp_ctx);
+	//smb2_deltree(tree, LOOP_FNAME);
+	return ret;
+}
+
 struct torture_suite *torture_smb2_getinfo_init(TALLOC_CTX *ctx)
 {
 	struct torture_suite *suite = torture_suite_create(
@@ -843,5 +922,7 @@ struct torture_suite *torture_smb2_getinfo_init(TALLOC_CTX *ctx)
 				      torture_smb2_fileinfo_grant_read);
 	torture_suite_add_simple_test(suite, "normalized",
 				      torture_smb2_fileinfo_normalized);
+	torture_suite_add_1smb2_test(suite, "getinfo_all_loop",
+				     torture_smb2_getfinfo_all_loop);
 	return suite;
 }
