@@ -131,6 +131,83 @@ done:
 }
 
 
+static bool test_read_truncate(struct torture_context *torture, struct smb2_tree *tree)
+{
+	bool ret = true;
+	NTSTATUS status;
+	struct smb2_handle h;
+	uint8_t buf[256*1024];
+	struct smb2_create io;
+	struct smb2_read rd;
+	TALLOC_CTX *tmp_ctx = talloc_new(tree);
+	struct smb2_request *req = NULL;
+	int rc;
+
+	for (int i = 0 ; i < ARRAY_SIZE(buf) ; i++) {
+		buf[i] = 0xAB;
+	}
+
+	smb2_util_unlink(tree, FNAME);
+
+	status = torture_smb2_testfile(tree, FNAME, &h);
+	CHECK_STATUS(status, NT_STATUS_OK);
+
+	status = smb2_util_write(tree, h, buf, 0, ARRAY_SIZE(buf));
+	CHECK_STATUS(status, NT_STATUS_OK);
+
+	ZERO_STRUCT(rd);
+	rd.in.file.handle = h;
+	rd.in.length = ARRAY_SIZE(buf) - 500;
+	rd.in.offset = 100;
+	rd.in.min_count = 1;
+
+	req = smb2_read_send(tree, &rd);
+	torture_assert_goto(
+		torture,
+		req != NULL,
+		ret,
+		done,
+		"smb2_read_send failed\n");
+
+	while (req->state < SMB2_REQUEST_RECV) {
+		rc = tevent_loop_once(torture->ev);
+		torture_assert_goto(
+			torture,
+			rc == 0,
+			ret,
+			done,
+			"tevent_loop_once failed\n");
+	}
+
+	smb_msleep(50);
+	ZERO_STRUCT(io);
+	io.in.desired_access     = SEC_FLAG_MAXIMUM_ALLOWED;
+	io.in.file_attributes    = FILE_ATTRIBUTE_NORMAL;
+	io.in.create_disposition = NTCREATEX_DISP_OVERWRITE_IF;
+	io.in.share_access =
+		NTCREATEX_SHARE_ACCESS_DELETE|
+		NTCREATEX_SHARE_ACCESS_READ|
+		NTCREATEX_SHARE_ACCESS_WRITE;
+	io.in.create_options = 0;
+	io.in.fname = FNAME;
+
+	status = smb2_create(tree, torture, &io);
+	CHECK_STATUS(status, NT_STATUS_OK);
+
+	status = smb2_read_recv(req, tree, &rd);
+	torture_assert_ntstatus_ok_goto(
+		torture,
+		status,
+		ret,
+		done,
+		"smb2_read_recv failed\n");
+
+done:
+	talloc_free(tmp_ctx);
+	return ret;
+}
+
+
 static bool test_read_position(struct torture_context *torture, struct smb2_tree *tree)
 {
 	bool ret = true;
@@ -309,6 +386,7 @@ struct torture_suite *torture_smb2_read_init(TALLOC_CTX *ctx)
 	struct torture_suite *suite = torture_suite_create(ctx, "read");
 
 	torture_suite_add_1smb2_test(suite, "eof", test_read_eof);
+	torture_suite_add_1smb2_test(suite, "truncate", test_read_truncate);
 	torture_suite_add_1smb2_test(suite, "position", test_read_position);
 	torture_suite_add_1smb2_test(suite, "dir", test_read_dir);
 	torture_suite_add_1smb2_test(suite, "access", test_read_access);
