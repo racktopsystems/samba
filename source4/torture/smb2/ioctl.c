@@ -6684,6 +6684,89 @@ static bool test_ioctl_dup_extents_dest_lck(struct torture_context *tctx,
 	return true;
 }
 
+static bool test_ioctl_resilient(struct torture_context *tctx,
+				   struct smb2_tree *tree)
+{
+	TALLOC_CTX *mem_ctx = talloc_new(tctx);
+	struct smb2_create io;
+	struct smb2_handle h1 = {{0}};
+	//struct smb2_handle h2 = {{0}};
+	NTSTATUS status;
+	bool ret = true;
+	struct smb2_tree *tree2 = NULL;
+	struct smbcli_options options2;
+	struct smb2_ioctl ioctl;
+	uint8_t res_req[8];
+	const char *fname = "ioctl_resilient";
+
+	options2 = tree->session->transport->options;
+
+	//smb2_util_unlink(tree, fname);
+
+	ZERO_STRUCT(io);
+	io.in.oplock_level = 0;
+	io.in.desired_access = SEC_RIGHTS_DIR_ALL;
+	io.in.file_attributes   = FILE_ATTRIBUTE_DIRECTORY;
+	io.in.create_disposition = NTCREATEX_DISP_OPEN_IF;
+	io.in.share_access = NTCREATEX_SHARE_ACCESS_READ|NTCREATEX_SHARE_ACCESS_WRITE|NTCREATEX_SHARE_ACCESS_DELETE;
+	io.in.create_options = NTCREATEX_OPTIONS_DIRECTORY;
+	io.in.fname = fname;
+
+	status = smb2_create(tree, tctx, &io);
+	torture_assert_ntstatus_ok(tctx, status, "create directory");
+
+	h1 = io.out.file.handle;
+
+	SIVAL(res_req, 0, 1000); /* timeout */
+	SIVAL(res_req, 4, 0);    /* reserved */
+	ioctl = (struct smb2_ioctl) {
+		.level = RAW_IOCTL_SMB2,
+		.in.file.handle = h1,
+		.in.function = FSCTL_LMR_REQ_RESILIENCY,
+		.in.max_response_size = 0,
+		.in.flags = SMB2_IOCTL_FLAG_IS_FSCTL,
+		.in.out.data = res_req,
+		.in.out.length = sizeof(res_req)
+	};
+	status = smb2_ioctl(tree, mem_ctx, &ioctl);
+	torture_assert_ntstatus_ok(tctx, status, "resilient ioctl");
+
+	/* create a new connection (same client_guid) */
+	if (!torture_smb2_connection_ext(tctx,
+	    smb2cli_session_current_id(tree->session->smbXcli),
+	    &options2, &tree2)) {
+		torture_warning(tctx, "couldn't reconnect, bailing\n");
+		ret = false;
+		goto done;
+	}
+
+	/* Drop the first connection, and orphan the file. */
+	TALLOC_FREE(tree);
+	tree = tree2;
+	tree2 = NULL;
+
+	/* try a durable reconnect */
+	ZERO_STRUCT(io);
+	io.in.fname = fname;
+	io.in.durable_handle = &h1;
+	status = smb2_create(tree, mem_ctx, &io);
+	torture_assert_ntstatus_ok(tctx, status, "resilient reconnect");
+
+	h1 = io.out.file.handle;
+
+done:
+	smb2_util_close(tree, h1);
+
+	if (tree2 != NULL)
+		talloc_free(tree2);
+
+	smb2_deltree(tree, fname);
+
+	talloc_free(mem_ctx);
+
+	return ret;
+}
+
 /*
  * testing of SMB2 ioctls
  */
@@ -6765,6 +6848,8 @@ struct torture_suite *torture_smb2_ioctl_init(TALLOC_CTX *ctx)
 				     test_ioctl_compress_notsup_set);
 	torture_suite_add_1smb2_test(suite, "network_interface_info",
 				     test_ioctl_network_interface_info);
+	torture_suite_add_1smb2_test(suite, "resiliency",
+				     test_ioctl_resilient);
 	torture_suite_add_1smb2_test(suite, "sparse_file_flag",
 				     test_ioctl_sparse_file_flag);
 	torture_suite_add_1smb2_test(suite, "sparse_file_attr",
