@@ -166,7 +166,7 @@ static bool test_lease_request(struct torture_context *tctx,
 	}
 
 	/* Also rejects multiple files leased under the same key. */
-	smb2_lease_create(&io, &ls, true, fname2, LEASE1, smb2_util_lease_state("RHW"));
+	smb2_lease_create(&io, &ls, false, fname2, LEASE1, smb2_util_lease_state("RHW"));
 	status = smb2_create(tree, mem_ctx, &io);
 	CHECK_STATUS(status, NT_STATUS_INVALID_PARAMETER);
 
