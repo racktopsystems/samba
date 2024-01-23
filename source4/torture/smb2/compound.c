@@ -25,6 +25,7 @@
 #include "torture/torture.h"
 #include "torture/smb2/proto.h"
 #include "../libcli/smb/smbXcli_base.h"
+#include "lease_break_handler.h"
 
 #define CHECK_STATUS(status, correct) do { \
 	if (!NT_STATUS_EQUAL(status, correct)) { \
@@ -197,6 +198,85 @@ static bool test_compound_break(struct torture_context *tctx,
 	status = smb2_getinfo_recv(req[1], tree, &gf);
 	CHECK_STATUS(status, NT_STATUS_OK);
 
+done:
+
+	smb2_util_close(tree, h1);
+	smb2_util_unlink(tree, fname1);
+	return ret;
+}
+
+static const uint64_t LEASE1 = 0xBADC0FFEE0DDF00Dull;
+static const uint64_t LEASE2 = 0xDEADBEEFFEEDBEADull;
+static bool test_compound_break_large(struct torture_context *tctx,
+			         struct smb2_tree *tree)
+{
+	const char *fname1 = "compound_break_large.dat";
+	NTSTATUS status;
+	bool ret = true;
+	struct smb2_create io2;
+	struct smb2_getinfo gf;
+	struct smb2_request *req[10];
+	struct smb2_handle h1;
+	struct smb2_handle hr;
+	struct smb2_lease ls;
+
+	tree->session->transport->lease.handler	= torture_lease_handler;
+	tree->session->transport->lease.private_data = tree;
+
+	ZERO_STRUCT(break_info);
+
+	smb2_lease_create(&io2, &ls, false, fname1, LEASE1, smb2_util_lease_state("RHW"));
+	status = smb2_create(tree, tctx, &io2);
+	torture_assert_ntstatus_ok(tctx, status, "Error opening the file");
+
+	h1 = io2.out.file.handle;
+
+	torture_comment(tctx, "TEST2: Opening second time with compound\n");
+
+	smb2_transport_compound_start(tree->session->transport, 10);
+
+	ZERO_STRUCT(gf);
+	gf.in.file.handle = h1;
+	gf.in.info_type = SMB2_GETINFO_FILE;
+	gf.in.info_class = 0x16;
+	gf.in.output_buffer_length = 0x1000;
+	gf.in.input_buffer_length = 0;
+
+	req[0] = smb2_getinfo_send(tree, &gf);
+	req[1] = smb2_getinfo_send(tree, &gf);
+
+	ZERO_STRUCT(io2);
+	smb2_lease_create(&io2, &ls, false, fname1, LEASE2, smb2_util_lease_state("RHW"));
+	req[2] = smb2_create_send(tree, &io2);
+
+	smb2_transport_compound_set_related(tree->session->transport, true);
+
+	hr.data[0] = UINT64_MAX;
+	hr.data[1] = UINT64_MAX;
+
+	ZERO_STRUCT(gf);
+	gf.in.file.handle = hr;
+	gf.in.info_type = SMB2_GETINFO_FILE;
+	gf.in.info_class = 0x16;
+	gf.in.output_buffer_length = 0x1000;
+	gf.in.input_buffer_length = 0;
+
+	req[3] = smb2_getinfo_send(tree, &gf);
+	req[4] = smb2_getinfo_send(tree, &gf);
+	req[5] = smb2_getinfo_send(tree, &gf);
+
+	ZERO_STRUCT(io2);
+	smb2_lease_create_share(&io2, &ls, false, fname1, smb2_util_share_access(""),
+				LEASE2, smb2_util_lease_state("RHW"));
+	req[6] = smb2_create_send(tree, &io2);
+
+	req[7] = smb2_getinfo_send(tree, &gf);
+	req[8] = smb2_getinfo_send(tree, &gf);
+	req[9] = smb2_getinfo_send(tree, &gf);
+
+	status = smb2_create_recv(req[6], tree, &io2);
+	CHECK_STATUS(status, NT_STATUS_SHARING_VIOLATION);
+	(void) smb2_getinfo_recv(req[9], tree, &gf);
 done:
 
 	smb2_util_close(tree, h1);
@@ -1445,6 +1525,7 @@ struct torture_suite *torture_smb2_compound_init(TALLOC_CTX *ctx)
 	torture_suite_add_1smb2_test(suite, "interim1",  test_compound_interim1);
 	torture_suite_add_1smb2_test(suite, "interim2",  test_compound_interim2);
 	torture_suite_add_1smb2_test(suite, "compound-break", test_compound_break);
+	torture_suite_add_1smb2_test(suite, "compound-break-large", test_compound_break_large);
 	torture_suite_add_1smb2_test(suite, "compound-padding", test_compound_padding);
 	torture_suite_add_1smb2_test(suite, "create-write-close",
 				     test_compound_create_write_close);
