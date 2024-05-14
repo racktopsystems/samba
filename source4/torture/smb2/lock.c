@@ -862,6 +862,103 @@ done:
 }
 
 /*
+  test SMB2 LOCK async operation in compound
+*/
+static bool test_async_compound(struct torture_context *torture,
+		       struct smb2_tree *tree)
+{
+	NTSTATUS status;
+	bool ret = true;
+	struct smb2_handle h = {{0}};
+	struct smb2_handle h2 = {{0}};
+	struct smb2_handle hr = {{0}};
+	uint8_t buf[200];
+	struct smb2_lock lck;
+	struct smb2_lock_element el[2];
+	//struct smb2_request *req = NULL;
+	struct smb2_create io;
+	struct smb2_getinfo gf;
+	struct smb2_request *req[5] = {0};
+
+	const char *fname = BASEDIR "\\async.txt";
+
+	status = torture_smb2_testdir(tree, BASEDIR, &h);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	smb2_util_close(tree, h);
+
+	status = torture_smb2_testfile(tree, fname, &h);
+	CHECK_STATUS(status, NT_STATUS_OK);
+
+	ZERO_STRUCT(buf);
+	status = smb2_util_write(tree, h, buf, 0, ARRAY_SIZE(buf));
+	CHECK_STATUS(status, NT_STATUS_OK);
+
+	status = torture_smb2_testfile(tree, fname, &h2);
+	CHECK_STATUS(status, NT_STATUS_OK);
+
+	lck.in.locks		= el;
+
+	lck.in.lock_count	= 0x0001;
+	lck.in.lock_sequence	= 0x00000000;
+	lck.in.file.handle	= h;
+	el[0].offset		= 100;
+	el[0].length		= 50;
+	el[0].reserved		= 0x00000000;
+	el[0].flags		= SMB2_LOCK_FLAG_EXCLUSIVE;
+
+	torture_comment(torture, "  Acquire first lock\n");
+	status = smb2_lock(tree, &lck);
+	CHECK_STATUS(status, NT_STATUS_OK);
+
+	torture_comment(torture, "  Second lock should pend on first\n");
+
+	smb2_transport_compound_start(tree->session->transport, 3);
+
+	ZERO_STRUCT(io);
+	io.in.oplock_level = 0;
+	io.in.desired_access = SEC_RIGHTS_FILE_ALL;
+	io.in.file_attributes   = FILE_ATTRIBUTE_NORMAL;
+	io.in.create_disposition = NTCREATEX_DISP_OVERWRITE;
+	io.in.share_access = NTCREATEX_SHARE_ACCESS_DELETE |
+			     NTCREATEX_SHARE_ACCESS_READ |
+			     NTCREATEX_SHARE_ACCESS_WRITE;
+	io.in.create_options = 0;
+	io.in.fname = fname;
+
+	req[0] = smb2_create_send(tree, &io);
+	smb2_transport_compound_set_related(tree->session->transport, true);
+
+	hr.data[0] = UINT64_MAX;
+	hr.data[1] = UINT64_MAX;
+
+	ZERO_STRUCT(gf);
+	gf.in.file.handle = hr;
+	gf.in.info_type = SMB2_GETINFO_FILE;
+	gf.in.info_class = 0x16;
+	gf.in.output_buffer_length = 0x1000;
+	gf.in.input_buffer_length = 0;
+
+	req[1] = smb2_getinfo_send(tree, &gf);
+
+	lck.in.file.handle	= hr;
+	req[2] = smb2_lock_send(tree, &lck);
+
+	WAIT_FOR_ASYNC_RESPONSE(req[2]);
+
+	torture_comment(torture, "  Unlock first lock\n");
+	lck.in.file.handle	= h;
+	el[0].flags		= SMB2_LOCK_FLAG_UNLOCK;
+	status = smb2_lock(tree, &lck);
+	CHECK_STATUS(status, NT_STATUS_OK);
+
+done:
+	smb2_util_close(tree, h2);
+	smb2_util_close(tree, h);
+	smb2_deltree(tree, BASEDIR);
+	return ret;
+}
+
+/*
   test SMB2 LOCK Cancel operation
 */
 static bool test_cancel(struct torture_context *torture,
@@ -3203,6 +3300,7 @@ struct torture_suite *torture_smb2_lock_init(TALLOC_CTX *ctx)
 	    test_lock_auto_unlock);
 	torture_suite_add_1smb2_test(suite, "lock", test_lock);
 	torture_suite_add_1smb2_test(suite, "async", test_async);
+	torture_suite_add_1smb2_test(suite, "async-compound", test_async_compound);
 	torture_suite_add_1smb2_test(suite, "cancel", test_cancel);
 	torture_suite_add_1smb2_test(suite, "cancel-tdis", test_cancel_tdis);
 	torture_suite_add_1smb2_test(suite, "cancel-logoff",
