@@ -1810,6 +1810,107 @@ static bool test_create_with_sd(struct torture_context *tctx,
 	return ret;
 }
 
+#define BASEDIR_PERMS "createperms"
+
+/*
+ * Test creating a file with DELETE permissions and deleting it
+ * when the file's ACL doesn't grant DELETE.
+ */
+static bool test_create_perms(struct torture_context *tctx,
+    struct smb2_tree *tree)
+{
+	NTSTATUS status;
+	struct smb2_create io;
+	const char *fdname = BASEDIR_PERMS "\\perms.txt";
+	const char *dname = BASEDIR_PERMS;
+	bool ret = true;
+	struct smb2_handle handle;
+	union smb_setfileinfo s;
+	struct security_descriptor *dir_sd;
+
+	if (!smb2_util_setup_dir(tctx, tree, dname))
+		return false;
+
+	torture_comment(tctx, "TESTING PERMISSIONS ON CREATE\n");
+
+	smb2_util_unlink(tree, fdname);
+
+	ZERO_STRUCT(io);
+	io.level = RAW_OPEN_SMB2;
+	io.in.create_flags = 0;
+	io.in.desired_access = SEC_STD_READ_CONTROL | SEC_STD_WRITE_DAC | SEC_STD_WRITE_OWNER;
+	io.in.create_options = 0;
+	io.in.file_attributes = FILE_ATTRIBUTE_DIRECTORY;
+	io.in.share_access = NTCREATEX_SHARE_ACCESS_READ | NTCREATEX_SHARE_ACCESS_WRITE;
+	io.in.alloc_size = 0;
+	io.in.create_disposition = NTCREATEX_DISP_OPEN;
+	io.in.impersonation_level = NTCREATEX_IMPERSONATION_ANONYMOUS;
+	io.in.security_flags = 0;
+	io.in.fname = dname;
+	status = smb2_create(tree, tctx, &io);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	handle = io.out.file.handle;
+
+	torture_comment(tctx, "set ACL on test dir\n");
+	dir_sd = security_descriptor_dacl_create(tctx,
+	    0, SID_NT_ANONYMOUS, SID_BUILTIN_USERS,
+	    SID_WORLD,
+	    SEC_ACE_TYPE_ACCESS_DENIED,
+	    SEC_STD_DELETE,
+	    SEC_ACE_FLAG_OBJECT_INHERIT | SEC_ACE_FLAG_CONTAINER_INHERIT | SEC_ACE_FLAG_INHERIT_ONLY,
+	    SID_WORLD,
+	    SEC_ACE_TYPE_ACCESS_ALLOWED,
+	    SEC_GENERIC_ALL,
+	    SEC_ACE_FLAG_OBJECT_INHERIT | SEC_ACE_FLAG_CONTAINER_INHERIT,
+	    NULL);
+
+	s.set_secdesc.level = RAW_SFILEINFO_SEC_DESC;
+	s.set_secdesc.in.file.handle = handle;
+	s.set_secdesc.in.secinfo_flags = SECINFO_DACL;
+	s.set_secdesc.in.sd = dir_sd;
+	status = smb2_setinfo_file(tree, &s);
+	CHECK_STATUS(status, NT_STATUS_OK);
+
+	smb2_util_close(tree, handle);
+
+	torture_comment(tctx, "create file marked delete-on-close\n");
+	ZERO_STRUCT(io);
+	io.level = RAW_OPEN_SMB2;
+	io.in.create_flags = 0;
+	io.in.desired_access = SEC_FILE_READ_ATTRIBUTE | SEC_STD_DELETE;
+	io.in.create_options = 0;
+	io.in.file_attributes = FILE_ATTRIBUTE_NORMAL;
+	io.in.share_access =
+		NTCREATEX_SHARE_ACCESS_READ | NTCREATEX_SHARE_ACCESS_WRITE;
+	io.in.alloc_size = 0;
+	io.in.create_disposition = NTCREATEX_DISP_CREATE;
+	io.in.impersonation_level = NTCREATEX_IMPERSONATION_ANONYMOUS;
+	io.in.security_flags = 0;
+	io.in.fname = fdname;
+	io.in.create_options		= NTCREATEX_OPTIONS_SEQUENTIAL_ONLY |
+					  NTCREATEX_OPTIONS_ASYNC_ALERT	|
+					  NTCREATEX_OPTIONS_NON_DIRECTORY_FILE |
+					  NTCREATEX_OPTIONS_DELETE_ON_CLOSE;
+
+	status = smb2_create(tree, tctx, &io);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	handle = io.out.file.handle;
+
+	smb2_util_close(tree, handle);
+
+	torture_comment(tctx, "check if file was deleted\n");
+	io.in.create_disposition = NTCREATEX_DISP_OPEN;
+	status = smb2_create(tree, tctx, &io);
+	CHECK_STATUS(status, NT_STATUS_OBJECT_NAME_NOT_FOUND);
+
+	smb2_util_close(tree, handle);
+	smb2_util_unlink(tree, fdname);
+	smb2_deltree(tree, dname);
+	smb2_tdis(tree);
+	smb2_logoff(tree->session);
+	return ret;
+}
+
 /*
   test SMB2 mkdir with OPEN_IF on the same name twice.
   Must use 2 connections to hit the race.
@@ -2317,6 +2418,7 @@ struct torture_suite *torture_smb2_create_init(TALLOC_CTX *ctx)
 	torture_suite_add_1smb2_test(suite, "acldir", test_create_acl_dir);
 	torture_suite_add_1smb2_test(suite, "nulldacl", test_create_null_dacl);
 	torture_suite_add_1smb2_test(suite, "with-sd", test_create_with_sd);
+	torture_suite_add_1smb2_test(suite, "perms", test_create_perms);
 	torture_suite_add_1smb2_test(suite, "mkdir-dup", test_mkdir_dup);
 	torture_suite_add_1smb2_test(suite, "dir-alloc-size", test_dir_alloc_size);
 	torture_suite_add_1smb2_test(suite, "readonly", test_create_readonly);
