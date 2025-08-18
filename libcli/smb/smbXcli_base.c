@@ -6318,6 +6318,11 @@ uint32_t smb2cli_tcon_flags(struct smbXcli_tcon *tcon)
 	return tcon->smb2.flags;
 }
 
+uint32_t smb2cli_tcon_maximal_access(struct smbXcli_tcon *tcon)
+{
+	return tcon->smb2.maximal_access;
+}
+
 void smb2cli_tcon_set_values(struct smbXcli_tcon *tcon,
 			     struct smbXcli_session *session,
 			     uint32_t tcon_id,

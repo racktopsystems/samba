@@ -528,6 +528,7 @@ uint32_t smb2cli_tcon_current_id(struct smbXcli_tcon *tcon);
 void smb2cli_tcon_set_id(struct smbXcli_tcon *tcon, uint32_t tcon_id);
 uint32_t smb2cli_tcon_capabilities(struct smbXcli_tcon *tcon);
 uint32_t smb2cli_tcon_flags(struct smbXcli_tcon *tcon);
+uint32_t smb2cli_tcon_maximal_access(struct smbXcli_tcon *tcon);
 void smb2cli_tcon_set_values(struct smbXcli_tcon *tcon,
 			     struct smbXcli_session *session,
 			     uint32_t tcon_id,

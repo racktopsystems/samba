@@ -22,6 +22,7 @@
 #include "includes.h"
 #include "libcli/smb2/smb2.h"
 #include "libcli/smb2/smb2_calls.h"
+#include "libcli/smb/smbXcli_base.h"
 #include "torture/torture.h"
 #include "torture/util.h"
 #include "torture/smb2/proto.h"
@@ -1911,6 +1912,85 @@ static bool test_create_perms(struct torture_context *tctx,
 	return ret;
 }
 
+static bool test_share_acl(struct torture_context *tctx,
+    struct smb2_tree *tree)
+{
+	NTSTATUS status;
+	struct smb2_create io;
+	const char *fdname = BASEDIR_PERMS "\\perms.txt";
+	const char *dname = BASEDIR_PERMS;
+	bool ret = true;
+	struct smb2_handle handle;
+	uint32_t max_access = smb2cli_tcon_maximal_access(tree->smbXcli);
+
+	if (!smb2_util_setup_dir(tctx, tree, dname))
+		return false;
+
+	torture_comment(tctx, "TESTING PERMISSIONS ON CREATE\n");
+
+	smb2_util_unlink(tree, fdname);
+
+	if ((max_access & SEC_GENERIC_ALL) != 0 ||
+	    (max_access & SEC_RIGHTS_FILE_ALL) == SEC_RIGHTS_FILE_ALL) {
+		torture_skip(tctx, "uninteresting share access\n");
+	}
+
+	ZERO_STRUCT(io);
+	io.level = RAW_OPEN_SMB2;
+	io.in.create_flags = 0;
+	io.in.desired_access = SEC_GENERIC_ALL;
+	io.in.create_options = 0;
+	io.in.file_attributes = FILE_ATTRIBUTE_NORMAL;
+	io.in.share_access = NTCREATEX_SHARE_ACCESS_READ | NTCREATEX_SHARE_ACCESS_WRITE;
+	io.in.alloc_size = 0;
+	io.in.create_disposition = NTCREATEX_DISP_CREATE;
+	io.in.impersonation_level = NTCREATEX_IMPERSONATION_ANONYMOUS;
+	io.in.security_flags = 0;
+	io.in.fname = fdname;
+	io.in.create_options = NTCREATEX_OPTIONS_NON_DIRECTORY_FILE;
+	status = smb2_create(tree, tctx, &io);
+
+	CHECK_STATUS(status, NT_STATUS_ACCESS_DENIED);
+
+	io.in.desired_access = max_access;
+	status = smb2_create(tree, tctx, &io);
+	CHECK_STATUS(status, NT_STATUS_OK);
+
+	handle = io.out.file.handle;
+	smb2_util_close(tree, handle);
+
+	io.in.desired_access = SEC_GENERIC_ALL;
+	io.in.create_disposition = NTCREATEX_DISP_OPEN;
+	status = smb2_create(tree, tctx, &io);
+
+	/*
+	 * [MS-SMB2] 3.3.5.9 "Receiving an SMB2 CREATE Request" says:
+	 *
+	 * The server MUST perform access check for the share...
+	 * If the underlying object store returns a failure and
+	 * TreeConnect.Share.DoAccessBasedDirectoryEnumeration is TRUE and
+	 * CreateDisposition is FILE_OPEN, the server MUST fail the request with
+	 * STATUS_OBJECT_NAME_NOT_FOUND.
+	 * Otherwise, if the underlying object store returns a
+	 * failure, the server MUST fail the request with STATUS_ACCESS_DENIED.
+	 *
+	 * However, it appears Windows doesn't actually follow this behavior.
+	 */
+	/*
+	if ((smb2cli_tcon_flags(tree->smbXcli) &
+	     SMB2_SHAREFLAG_ACCESS_BASED_DIRECTORY_ENUM) != 0)
+		CHECK_STATUS(status, NT_STATUS_OBJECT_NAME_NOT_FOUND);
+	else
+	*/
+	CHECK_STATUS(status, NT_STATUS_ACCESS_DENIED);
+
+	smb2_util_unlink(tree, fdname);
+	smb2_deltree(tree, dname);
+	smb2_tdis(tree);
+	smb2_logoff(tree->session);
+	return ret;
+}
+
 /*
   test SMB2 mkdir with OPEN_IF on the same name twice.
   Must use 2 connections to hit the race.
@@ -2423,6 +2503,7 @@ struct torture_suite *torture_smb2_create_init(TALLOC_CTX *ctx)
 	torture_suite_add_1smb2_test(suite, "dir-alloc-size", test_dir_alloc_size);
 	torture_suite_add_1smb2_test(suite, "readonly", test_create_readonly);
 	torture_suite_add_1smb2_test(suite, "longname", test_smb2_long_name);
+	torture_suite_add_1smb2_test(suite, "share-acl", test_share_acl);
 	suite->description = talloc_strdup(suite, "SMB2-CREATE tests");
 
 	return suite;
