@@ -4714,6 +4714,89 @@ done:
 	return ret;
 }
 
+static bool test_lease_close_break_rh(struct torture_context *tctx,
+				   struct smb2_tree *tree)
+{
+	TALLOC_CTX *mem_ctx = talloc_new(tctx);
+	struct smb2_create io;
+	struct smb2_lease ls1;
+	struct smb2_lease ls2;
+	struct smb2_handle h1 = {{0}}, h2 = {{0}};
+	NTSTATUS status;
+	const char *fname = "lease_close_break_test.dat";
+	bool ret = true;
+	struct smb2_request *reqb = NULL, *reqc = NULL;
+	struct smb2_lease_break_ack ack = {};
+	uint32_t caps;
+
+	caps = smb2cli_conn_server_capabilities(tree->session->transport->conn);
+	if (!(caps & SMB2_CAP_LEASING)) {
+		torture_skip(tctx, "leases are not supported");
+	}
+
+	smb2_util_unlink(tree, fname);
+
+	tree->session->transport->lease.handler	= torture_lease_handler;
+	tree->session->transport->lease.private_data = tree;
+	tree->session->transport->oplock.handler = torture_oplock_handler;
+	tree->session->transport->oplock.private_data = tree;
+
+	ZERO_STRUCT(lease_break_info);
+
+	/* Grab a RH lease */
+	smb2_lease_create_share(&io, &ls1, false, fname, smb2_util_share_access("RWD"), LEASE1, smb2_util_lease_state("RH"));
+	io.in.desired_access = 0x120089;
+	status = smb2_create(tree, mem_ctx, &io);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	//CHECK_CREATED(&io, CREATED, FILE_ATTRIBUTE_ARCHIVE);
+	CHECK_LEASE(&io, "RH", true, LEASE1, 0);
+	h1 = io.out.file.handle;
+
+	/* Grab another RH lease without Write sharing */
+	smb2_lease_create_share(&io, &ls1, false, fname, smb2_util_share_access("RD"), LEASE2, smb2_util_lease_state("RWH"));
+	io.in.desired_access = 0x120089;
+	status = smb2_create(tree, mem_ctx, &io);
+	CHECK_STATUS(status, NT_STATUS_OK);
+	//CHECK_CREATED(&io, CREATED, FILE_ATTRIBUTE_ARCHIVE);
+	CHECK_LEASE(&io, "RH", true, LEASE2, 0);
+	h2 = io.out.file.handle;
+
+	/* We defer acking the lease break. */
+	lease_break_info.lease_skip_ack = true;
+
+	/* Break with a RH request with conflicting share access */
+	smb2_lease_create_share(&io, &ls2, false, fname, smb2_util_share_access("R"), LEASE1, smb2_util_lease_state("RH"));
+	io.in.desired_access = 0x12019f;
+	reqb = smb2_create_send(tree, &io);
+
+	torture_assert(tctx, reqb->state == SMB2_REQUEST_RECV, "reqb pending");
+
+	/* We got the lease break, but defer the ack */
+	CHECK_BREAK_INFO("RH", "R", LEASE2);
+
+	ack.in.lease.lease_key =
+		lease_break_info.lease_break.current_lease.lease_key;
+	ack.in.lease.lease_state =
+		lease_break_info.lease_break.new_lease_state;
+
+	/* Close the conflicting handle (implicit ack) */
+	(void) smb2_util_close(tree, h2);
+	lease_break_info.lease_skip_ack = false;
+
+	status = smb2_create_recv(reqb, tctx, &io);
+	CHECK_STATUS(status, NT_STATUS_OK);
+
+	smb2_util_close(tree, io.out.file.handle);
+
+done:
+	smb2_util_close(tree, h1);
+	smb2_util_unlink(tree, fname);
+
+	talloc_free(mem_ctx);
+
+	return ret;
+}
+
 struct torture_suite *torture_smb2_lease_init(TALLOC_CTX *ctx)
 {
 	struct torture_suite *suite =
@@ -4761,6 +4844,7 @@ struct torture_suite *torture_smb2_lease_init(TALLOC_CTX *ctx)
 	torture_suite_add_1smb2_test(suite, "durable_break_w", test_lease_durable_break_w);
 	torture_suite_add_1smb2_test(suite, "durable_upgrade", test_lease_durable_upgrade);
 	torture_suite_add_1smb2_test(suite, "close_break", test_lease_close_break);
+	torture_suite_add_1smb2_test(suite, "close_break_rh", test_lease_close_break_rh);
 
 	suite->description = talloc_strdup(suite, "SMB2-LEASE tests");
 
