@@ -4691,7 +4691,7 @@ static bool test_lease_close_break(struct torture_context *tctx,
 	/* We ack the lease break. */
 	status = smb2_lease_break_ack(tree, &ack);
 	if (!NT_STATUS_EQUAL(status, NT_STATUS_OK) &&
-	    !NT_STATUS_EQUAL(status, NT_STATUS_UNSUCCESSFUL))
+	    !NT_STATUS_EQUAL(status, NT_STATUS_OBJECT_NAME_NOT_FOUND))
 		torture_result(tctx, TORTURE_FAIL, __location__": Lease break wrong status %s",
 		    nt_errstr(status));
 
