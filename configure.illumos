@@ -9,13 +9,15 @@
 WAF=./buildtools/bin/waf
 export JOBS=1
 
-export CC="/usr/bin/gcc -m64"
-export CXX="/usr/bin/g++ -m64"
-export CFLAGS=' -std=c99 -D__EXTENSIONS__=1 -I/usr/include/python3.5m'
+export PYTHON=/usr/bin/python3
+pyi=$(${PYTHON}-config --includes)
+
+export  CC="/usr/bin/gcc-10 -m64"
+export CXX="/usr/bin/g++-10 -m64"
+export CFLAGS=" -std=c99 -D__EXTENSIONS__=1 $pyi"
 export LDFLAGS='-R/usr/local/samba/lib -R/usr/local/samba/lib/private -lrt -lsec -lcrypt -lmd5 -lsocket -lnsl -lsendfile -lssp_ns -L/usr/gnu/lib -R/usr/gnu/lib'
 # export LINKFKAGS="$LDFLAGS"
 
-export PYTHON=/usr/bin/python3.5m
 
 $WAF configure -C \
 	--prefix=/usr/local/samba \
